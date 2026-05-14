@@ -19,6 +19,11 @@ import {
   MessageSquare,
   Trash2,
   X,
+  Play,
+  Terminal,
+  AlertCircle,
+  ChevronUp,
+  ImageIcon,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -62,6 +67,26 @@ interface HacheModel {
   gradient: string;
   description: string;
 }
+
+interface SandboxResult {
+  stdout: string;
+  stderr: string;
+  text: string;
+  error: string | null;
+  artifacts: Array<{
+    type: string;
+    text?: string;
+    png?: string;
+    jpeg?: string;
+    svg?: string;
+  }>;
+}
+
+// ─── Supported sandbox languages ──────────────────────────────────
+
+const SANDBOX_LANGUAGES = new Set([
+  "python", "py", "javascript", "js", "typescript", "ts", "r", "java", "bash", "sh", "shell", "zsh",
+]);
 
 // ─── Hache Models ─────────────────────────────────────────────────
 
@@ -952,6 +977,237 @@ function WelcomeScreen({
   );
 }
 
+// ─── Code Block with Sandbox ──────────────────────────────────────
+
+function CodeBlockWithSandbox({
+  language,
+  code,
+  messageId,
+  copiedId,
+  onCopy,
+}: {
+  language: string;
+  code: string;
+  messageId: string;
+  copiedId: string | null;
+  onCopy: (text: string, id: string) => void;
+}) {
+  const [sandboxResult, setSandboxResult] = useState<SandboxResult | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [showOutput, setShowOutput] = useState(false);
+  const canRun = SANDBOX_LANGUAGES.has(language.toLowerCase());
+
+  const runCode = async () => {
+    setIsRunning(true);
+    setShowOutput(true);
+    setSandboxResult(null);
+
+    try {
+      const response = await fetch("/api/sandbox", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, language }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setSandboxResult({
+          stdout: "",
+          stderr: data.error || "Error desconocido",
+          text: "",
+          error: data.error || "Error desconocido",
+          artifacts: [],
+        });
+      } else {
+        setSandboxResult(data);
+      }
+    } catch (error) {
+      setSandboxResult({
+        stdout: "",
+        stderr: "Error de conexión al sandbox",
+        text: "",
+        error: "Error de conexión al sandbox. Intenta de nuevo.",
+        artifacts: [],
+      });
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  return (
+    <div className="relative my-3 rounded-lg overflow-hidden border border-border/30">
+      {/* Header */}
+      <div className="flex items-center justify-between bg-muted/50 px-3 py-1.5 border-b border-border/20">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-muted-foreground">
+            {language}
+          </span>
+          {canRun && (
+            <span className="text-[8px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-medium">
+              SANDBOX
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {canRun && (
+            <button
+              onClick={runCode}
+              disabled={isRunning}
+              className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+            >
+              {isRunning ? (
+                <>
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Ejecutando...
+                </>
+              ) : (
+                <>
+                  <Play className="w-3 h-3" />
+                  Ejecutar
+                </>
+              )}
+            </button>
+          )}
+          <button
+            onClick={() => onCopy(code, messageId + "-code")}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {copiedId === messageId + "-code" ? (
+              <Check className="w-3 h-3 text-emerald-500" />
+            ) : (
+              <Copy className="w-3 h-3" />
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Code */}
+      <SyntaxHighlighter
+        style={oneDark}
+        language={language}
+        PreTag="div"
+        customStyle={{
+          margin: 0,
+          borderRadius: 0,
+          fontSize: "12px",
+        }}
+      >
+        {code}
+      </SyntaxHighlighter>
+
+      {/* Sandbox Output */}
+      <AnimatePresence>
+        {showOutput && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            {isRunning ? (
+              <div className="flex items-center gap-2 px-3 py-3 bg-muted/30 border-t border-border/20">
+                <Loader2 className="w-3 h-3 animate-spin text-emerald-400" />
+                <span className="text-[11px] text-muted-foreground">Ejecutando código en sandbox...</span>
+              </div>
+            ) : sandboxResult ? (
+              <div className="border-t border-border/20 bg-[#0d1117]">
+                {/* Output Header */}
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/10">
+                  <div className="flex items-center gap-1.5">
+                    <Terminal className="w-3 h-3 text-muted-foreground" />
+                    <span className="text-[10px] font-mono text-muted-foreground">Output</span>
+                    {sandboxResult.error && (
+                      <AlertCircle className="w-3 h-3 text-red-400" />
+                    )}
+                  </div>
+                  <button
+                    onClick={() => setShowOutput(false)}
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <ChevronUp className="w-3 h-3" />
+                  </button>
+                </div>
+
+                {/* Error */}
+                {sandboxResult.error && (
+                  <div className="px-3 py-2 border-b border-red-500/10 bg-red-500/5">
+                    <p className="text-[11px] font-mono text-red-400 whitespace-pre-wrap">{sandboxResult.error}</p>
+                  </div>
+                )}
+
+                {/* Stdout */}
+                {sandboxResult.stdout && (
+                  <div className="px-3 py-2">
+                    <p className="text-[11px] font-mono text-green-400 whitespace-pre-wrap">{sandboxResult.stdout}</p>
+                  </div>
+                )}
+
+                {/* Text output */}
+                {sandboxResult.text && !sandboxResult.stdout && (
+                  <div className="px-3 py-2">
+                    <p className="text-[11px] font-mono text-foreground whitespace-pre-wrap">{sandboxResult.text}</p>
+                  </div>
+                )}
+
+                {/* Stderr (only if no error already shown) */}
+                {sandboxResult.stderr && !sandboxResult.error && (
+                  <div className="px-3 py-2 border-t border-border/10">
+                    <p className="text-[10px] font-mono text-yellow-400/70 whitespace-pre-wrap">{sandboxResult.stderr}</p>
+                  </div>
+                )}
+
+                {/* Image artifacts (charts, plots, etc.) */}
+                {sandboxResult.artifacts?.map((artifact, i) => (
+                  <div key={i} className="px-3 py-2 border-t border-border/10">
+                    {artifact.png && (
+                      <div className="mt-1">
+                        <div className="flex items-center gap-1 mb-1">
+                          <ImageIcon className="w-3 h-3 text-muted-foreground" />
+                          <span className="text-[9px] text-muted-foreground">Gráfico generado</span>
+                        </div>
+                        <img
+                          src={`data:image/png;base64,${artifact.png}`}
+                          alt="Sandbox output"
+                          className="max-w-full rounded border border-border/20"
+                        />
+                      </div>
+                    )}
+                    {artifact.svg && (
+                      <div className="mt-1">
+                        <div className="flex items-center gap-1 mb-1">
+                          <ImageIcon className="w-3 h-3 text-muted-foreground" />
+                          <span className="text-[9px] text-muted-foreground">Gráfico SVG</span>
+                        </div>
+                        <img
+                          src={`data:image/svg+xml;base64,${artifact.svg}`}
+                          alt="Sandbox output"
+                          className="max-w-full rounded border border-border/20"
+                        />
+                      </div>
+                    )}
+                    {artifact.text && !artifact.png && !artifact.svg && (
+                      <p className="text-[11px] font-mono text-foreground whitespace-pre-wrap">{artifact.text}</p>
+                    )}
+                  </div>
+                ))}
+
+                {/* Empty output */}
+                {!sandboxResult.stdout && !sandboxResult.text && !sandboxResult.error && !sandboxResult.artifacts?.length && (
+                  <div className="px-3 py-2">
+                    <p className="text-[11px] font-mono text-muted-foreground italic">Sin output</p>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ─── Message Bubble ──────────────────────────────────────────────
 
 function MessageBubble({
@@ -1014,41 +1270,17 @@ function MessageBubble({
                       );
                     }
 
+                    const language = match[1];
+                    const code = String(children).replace(/\n$/, "");
+
                     return (
-                      <div className="relative my-3 rounded-lg overflow-hidden border border-border/30">
-                        <div className="flex items-center justify-between bg-muted/50 px-3 py-1.5 border-b border-border/20">
-                          <span className="text-[10px] font-mono text-muted-foreground">
-                            {match[1]}
-                          </span>
-                          <button
-                            onClick={() =>
-                              onCopy(
-                                String(children).replace(/\n$/, ""),
-                                message.id + "-code"
-                              )
-                            }
-                            className="text-muted-foreground hover:text-foreground transition-colors"
-                          >
-                            {copiedId === message.id + "-code" ? (
-                              <Check className="w-3 h-3 text-emerald-500" />
-                            ) : (
-                              <Copy className="w-3 h-3" />
-                            )}
-                          </button>
-                        </div>
-                        <SyntaxHighlighter
-                          style={oneDark}
-                          language={match[1]}
-                          PreTag="div"
-                          customStyle={{
-                            margin: 0,
-                            borderRadius: 0,
-                            fontSize: "12px",
-                          }}
-                        >
-                          {String(children).replace(/\n$/, "")}
-                        </SyntaxHighlighter>
-                      </div>
+                      <CodeBlockWithSandbox
+                        language={language}
+                        code={code}
+                        messageId={message.id}
+                        copiedId={copiedId}
+                        onCopy={onCopy}
+                      />
                     );
                   },
                   p({ children }) {
