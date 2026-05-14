@@ -14,14 +14,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Ochi IA - Tu Inteligencia Artificial",
+  title: "Hache IA - Tu Inteligencia Artificial",
   description:
-    "Ochi IA - Tu asistente de inteligencia artificial personal. Potenciado por los mejores modelos del mundo.",
+    "Hache IA - Tu asistente de inteligencia artificial personal. Potenciado por los mejores modelos del mundo.",
   icons: {
     icon: "/favicon.png",
   },
   openGraph: {
-    title: "Ochi IA",
+    title: "Hache IA",
     description: "Tu inteligencia artificial personal",
     type: "website",
   },

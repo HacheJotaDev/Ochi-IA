@@ -4,21 +4,21 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send,
-  User,
   Sparkles,
-  Trash2,
   Moon,
   Sun,
   Loader2,
   Zap,
   Copy,
   Check,
-  Crown,
   Brain,
   Plus,
-  MessageSquare,
   ChevronDown,
-  RotateCcw,
+  PanelLeftClose,
+  PanelLeft,
+  MessageSquare,
+  Trash2,
+  X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -40,11 +40,20 @@ interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
-  timestamp: Date;
+  timestamp: string;
   model?: string;
 }
 
-interface OchiModel {
+interface Chat {
+  id: string;
+  title: string;
+  messages: Message[];
+  model: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface HacheModel {
   id: string;
   name: string;
   tagline: string;
@@ -54,12 +63,12 @@ interface OchiModel {
   description: string;
 }
 
-// ─── Ochi Models ─────────────────────────────────────────────────
+// ─── Hache Models ─────────────────────────────────────────────────
 
-const OCHI_MODELS: OchiModel[] = [
+const HACHE_MODELS: HacheModel[] = [
   {
-    id: "ochi-flash",
-    name: "Ochi Flash",
+    id: "hache-flash",
+    name: "Hache Flash",
     tagline: "Rápido",
     icon: Zap,
     color: "text-amber-400",
@@ -67,8 +76,8 @@ const OCHI_MODELS: OchiModel[] = [
     description: "Respuestas ultrarrápidas. Ideal para preguntas directas y tareas simples.",
   },
   {
-    id: "ochi-plus",
-    name: "Ochi Plus",
+    id: "hache-plus",
+    name: "Hache Plus",
     tagline: "Rápido + Razonamiento",
     icon: Sparkles,
     color: "text-violet-400",
@@ -76,8 +85,8 @@ const OCHI_MODELS: OchiModel[] = [
     description: "Velocidad y razonamiento. El modelo equilibrado para todo.",
   },
   {
-    id: "ochi-thinking",
-    name: "Ochi Thinking",
+    id: "hache-thinking",
+    name: "Hache Thinking",
     tagline: "Razonamiento",
     icon: Brain,
     color: "text-cyan-400",
@@ -86,24 +95,131 @@ const OCHI_MODELS: OchiModel[] = [
   },
 ];
 
+// ─── Storage Helpers ──────────────────────────────────────────────
+
+const STORAGE_KEY = "hache-ia-chats";
+const ACTIVE_CHAT_KEY = "hache-ia-active-chat";
+const MODEL_KEY = "hache-ia-model";
+
+function loadChats(): Chat[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveChats(chats: Chat[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
+  } catch {
+    // Storage full or unavailable
+  }
+}
+
+function loadActiveChatId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_CHAT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveChatId(id: string | null) {
+  try {
+    if (id) {
+      localStorage.setItem(ACTIVE_CHAT_KEY, id);
+    } else {
+      localStorage.removeItem(ACTIVE_CHAT_KEY);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function loadSelectedModel(): string {
+  try {
+    return localStorage.getItem(MODEL_KEY) || "hache-plus";
+  } catch {
+    return "hache-plus";
+  }
+}
+
+function saveSelectedModel(id: string) {
+  try {
+    localStorage.setItem(MODEL_KEY, id);
+  } catch {
+    // ignore
+  }
+}
+
+function generateTitle(content: string): string {
+  const clean = content.trim().slice(0, 60);
+  return clean.length < content.trim().length ? clean + "..." : clean;
+}
+
 // ─── Main Chat ───────────────────────────────────────────────────
 
 export default function ChatPage() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedModel, setSelectedModel] = useState<OchiModel>(OCHI_MODELS[1]); // Ochi Plus default
+  const [selectedModelId, setSelectedModelId] = useState("hache-plus");
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
+  const selectedModel = HACHE_MODELS.find((m) => m.id === selectedModelId) || HACHE_MODELS[1];
+
+  const activeChat = chats.find((c) => c.id === activeChatId) || null;
+  const messages = activeChat?.messages || [];
+
+  // Load from localStorage on mount
   useEffect(() => {
+    const savedChats = loadChats();
+    const savedActiveId = loadActiveChatId();
+    const savedModel = loadSelectedModel();
+
+    setChats(savedChats);
+    setSelectedModelId(savedModel);
+
+    if (savedActiveId && savedChats.find((c) => c.id === savedActiveId)) {
+      setActiveChatId(savedActiveId);
+    } else if (savedChats.length > 0) {
+      setActiveChatId(savedChats[0].id);
+    }
+
     setMounted(true);
   }, []);
+
+  // Persist chats whenever they change
+  useEffect(() => {
+    if (mounted) {
+      saveChats(chats);
+    }
+  }, [chats, mounted]);
+
+  // Persist active chat id
+  useEffect(() => {
+    if (mounted) {
+      saveActiveChatId(activeChatId);
+    }
+  }, [activeChatId, mounted]);
+
+  // Persist selected model
+  useEffect(() => {
+    if (mounted) {
+      saveSelectedModel(selectedModelId);
+    }
+  }, [selectedModelId, mounted]);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -113,22 +229,84 @@ export default function ChatPage() {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  // Focus textarea on load
   useEffect(() => {
     if (mounted) textareaRef.current?.focus();
-  }, [mounted]);
+  }, [mounted, activeChatId]);
+
+  const createNewChat = useCallback(() => {
+    return {
+      id: crypto.randomUUID(),
+      title: "Nuevo chat",
+      messages: [],
+      model: selectedModelId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+  }, [selectedModelId]);
+
+  const handleNewChat = () => {
+    const newChat = createNewChat();
+    setChats((prev) => [newChat, ...prev]);
+    setActiveChatId(newChat.id);
+    setInput("");
+    textareaRef.current?.focus();
+  };
+
+  const handleSelectChat = (chatId: string) => {
+    setActiveChatId(chatId);
+    setInput("");
+  };
+
+  const handleDeleteChat = (chatId: string) => {
+    setChats((prev) => {
+      const filtered = prev.filter((c) => c.id !== chatId);
+      if (activeChatId === chatId) {
+        setActiveChatId(filtered.length > 0 ? filtered[0].id : null);
+      }
+      return filtered;
+    });
+    setDeleteConfirmId(null);
+  };
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
+
+    let currentChatId = activeChatId;
+
+    // If no active chat, create one
+    if (!currentChatId) {
+      const newChat = createNewChat();
+      currentChatId = newChat.id;
+      setChats((prev) => [newChat, ...prev]);
+      setActiveChatId(newChat.id);
+    }
 
     const userMessage: Message = {
       id: crypto.randomUUID(),
       role: "user",
       content: input.trim(),
-      timestamp: new Date(),
+      timestamp: new Date().toISOString(),
     };
 
-    setMessages((prev) => [...prev, userMessage]);
+    const finalChatId = currentChatId;
+
+    // Update chat with user message + auto-title
+    setChats((prev) =>
+      prev.map((c) => {
+        if (c.id === finalChatId) {
+          const isFirstMessage = c.messages.length === 0;
+          return {
+            ...c,
+            messages: [...c.messages, userMessage],
+            title: isFirstMessage ? generateTitle(userMessage.content) : c.title,
+            model: selectedModelId,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return c;
+      })
+    );
+
     setInput("");
     setIsLoading(true);
 
@@ -136,16 +314,20 @@ export default function ChatPage() {
       textareaRef.current.style.height = "auto";
     }
 
+    // Get all messages for API call
+    const currentChat = chats.find((c) => c.id === finalChatId);
+    const allMessages = [...(currentChat?.messages || []), userMessage];
+
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [...messages, userMessage].map((m) => ({
+          messages: allMessages.map((m) => ({
             role: m.role,
             content: m.content,
           })),
-          model: selectedModel.id,
+          model: selectedModelId,
         }),
       });
 
@@ -157,11 +339,23 @@ export default function ChatPage() {
         id: crypto.randomUUID(),
         role: "assistant",
         content: "",
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
         model: selectedModel.name,
       };
 
-      setMessages((prev) => [...prev, assistantMessage]);
+      // Add empty assistant message
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id === finalChatId) {
+            return {
+              ...c,
+              messages: [...c.messages, assistantMessage],
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          return c;
+        })
+      );
 
       const reader = response.body?.getReader();
       if (!reader) throw new Error("No se pudo leer la respuesta");
@@ -187,12 +381,22 @@ export default function ChatPage() {
             const parsed = JSON.parse(data);
             if (parsed.content) {
               accumulated += parsed.content;
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantMessage.id
-                    ? { ...m, content: accumulated }
-                    : m
-                )
+              const currentAccumulated = accumulated;
+              setChats((prev) =>
+                prev.map((c) => {
+                  if (c.id === finalChatId) {
+                    return {
+                      ...c,
+                      messages: c.messages.map((m) =>
+                        m.id === assistantMessage.id
+                          ? { ...m, content: currentAccumulated }
+                          : m
+                      ),
+                      updatedAt: new Date().toISOString(),
+                    };
+                  }
+                  return c;
+                })
               );
             }
           } catch {
@@ -207,10 +411,21 @@ export default function ChatPage() {
         role: "assistant",
         content:
           "Lo siento, hubo un error. Intenta de nuevo en unos segundos.",
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
         model: selectedModel.name,
       };
-      setMessages((prev) => [...prev, errorMessage]);
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id === finalChatId) {
+            return {
+              ...c,
+              messages: [...c.messages, errorMessage],
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          return c;
+        })
+      );
     } finally {
       setIsLoading(false);
       textareaRef.current?.focus();
@@ -231,11 +446,6 @@ export default function ChatPage() {
     textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
   };
 
-  const clearChat = () => {
-    setMessages([]);
-    textareaRef.current?.focus();
-  };
-
   const copyToClipboard = async (text: string, id: string) => {
     await navigator.clipboard.writeText(text);
     setCopiedId(id);
@@ -252,239 +462,415 @@ export default function ChatPage() {
 
   const hasMessages = messages.length > 0;
 
+  // Group chats by date
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  const groupedChats: { label: string; chats: Chat[] }[] = [];
+  const todayChats = chats.filter((c) => new Date(c.updatedAt).toDateString() === today.toDateString());
+  const yesterdayChats = chats.filter((c) => new Date(c.updatedAt).toDateString() === yesterday.toDateString());
+  const olderChats = chats.filter(
+    (c) =>
+      new Date(c.updatedAt).toDateString() !== today.toDateString() &&
+      new Date(c.updatedAt).toDateString() !== yesterday.toDateString()
+  );
+
+  if (todayChats.length > 0) groupedChats.push({ label: "Hoy", chats: todayChats });
+  if (yesterdayChats.length > 0) groupedChats.push({ label: "Ayer", chats: yesterdayChats });
+  if (olderChats.length > 0) groupedChats.push({ label: "Anterior", chats: olderChats });
+
   return (
-    <div className="h-screen bg-background flex flex-col overflow-hidden">
-      {/* ─── Top Bar ─── */}
-      <header className="flex-shrink-0 border-b border-border/30 bg-background/90 backdrop-blur-xl">
-        <div className="max-w-3xl mx-auto px-4 h-12 flex items-center justify-between">
-          {/* Left: Logo + Name */}
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg overflow-hidden ring-1 ring-white/10">
-              <Image
-                src="/ochi-ia-logo.png"
-                alt="Ochi"
-                width={28}
-                height={28}
-                className="w-full h-full object-cover"
-              />
-            </div>
-            <span className="font-bold text-sm tracking-tight bg-gradient-to-r from-violet-400 to-cyan-400 bg-clip-text text-transparent">
-              Ochi IA
-            </span>
-          </div>
-
-          {/* Center: Model Picker */}
-          <div className="relative">
-            <button
-              onClick={() => setShowModelPicker(!showModelPicker)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-muted/60 transition-colors"
-            >
-              <selectedModel.icon className={`w-3.5 h-3.5 ${selectedModel.color}`} />
-              <span className="text-sm font-semibold">{selectedModel.name}</span>
-              <ChevronDown className="w-3 h-3 text-muted-foreground" />
-            </button>
-
-            <AnimatePresence>
-              {showModelPicker && (
-                <>
-                  <div
-                    className="fixed inset-0 z-40"
-                    onClick={() => setShowModelPicker(false)}
+    <div className="h-screen bg-background flex overflow-hidden">
+      {/* ─── Sidebar ─── */}
+      <AnimatePresence initial={false}>
+        {sidebarOpen && (
+          <motion.aside
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: 260, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeInOut" }}
+            className="flex-shrink-0 border-r border-border/30 bg-background/95 backdrop-blur-xl flex flex-col overflow-hidden"
+          >
+            {/* Sidebar Header */}
+            <div className="px-3 pt-3 pb-2 flex items-center justify-between flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg overflow-hidden ring-1 ring-white/10">
+                  <Image
+                    src="/hache-ia-logo.png"
+                    alt="Hache"
+                    width={28}
+                    height={28}
+                    className="w-full h-full object-cover"
                   />
-                  <motion.div
-                    initial={{ opacity: 0, y: -4, scale: 0.97 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -4, scale: 0.97 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-80 bg-popover border border-border/50 rounded-xl shadow-2xl overflow-hidden z-50"
-                  >
-                    <div className="p-1.5">
-                      {OCHI_MODELS.map((model) => {
-                        const Icon = model.icon;
-                        const isSelected = selectedModel.id === model.id;
-                        return (
-                          <button
-                            key={model.id}
-                            onClick={() => {
-                              setSelectedModel(model);
-                              setShowModelPicker(false);
-                            }}
-                            className={`w-full flex items-start gap-3 p-3 rounded-lg transition-colors text-left ${
-                              isSelected
-                                ? "bg-muted/80"
-                                : "hover:bg-muted/40"
-                            }`}
-                          >
-                            <div
-                              className={`w-8 h-8 rounded-lg bg-gradient-to-br ${model.gradient} flex items-center justify-center flex-shrink-0 shadow-lg`}
+                </div>
+                <span className="font-bold text-sm tracking-tight bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
+                  Hache IA
+                </span>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 rounded-lg text-muted-foreground hover:text-foreground"
+                onClick={() => setSidebarOpen(false)}
+              >
+                <PanelLeftClose className="w-4 h-4" />
+              </Button>
+            </div>
+
+            {/* New Chat Button */}
+            <div className="px-3 pb-2 flex-shrink-0">
+              <button
+                onClick={handleNewChat}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-border/40 hover:bg-muted/50 transition-colors text-sm"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Nuevo chat</span>
+              </button>
+            </div>
+
+            {/* Chat List */}
+            <div className="flex-1 overflow-y-auto px-2 space-y-1">
+              {groupedChats.map((group) => (
+                <div key={group.label} className="mb-2">
+                  <p className="px-2 py-1 text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-wider">
+                    {group.label}
+                  </p>
+                  {group.chats.map((chat) => (
+                    <div
+                      key={chat.id}
+                      className={`group relative flex items-center rounded-lg transition-colors cursor-pointer ${
+                        chat.id === activeChatId
+                          ? "bg-muted/70"
+                          : "hover:bg-muted/30"
+                      }`}
+                    >
+                      <button
+                        onClick={() => handleSelectChat(chat.id)}
+                        className="flex-1 flex items-center gap-2 px-2.5 py-2 text-left min-w-0"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                        <span className="text-xs truncate">{chat.title}</span>
+                      </button>
+                      <div className="absolute right-1 opacity-0 group-hover:opacity-100 transition-opacity flex items-center">
+                        {deleteConfirmId === chat.id ? (
+                          <div className="flex items-center gap-0.5">
+                            <button
+                              onClick={() => handleDeleteChat(chat.id)}
+                              className="p-1 rounded hover:bg-destructive/20 text-destructive transition-colors"
                             >
-                              <Icon className="w-4 h-4 text-white" />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className="font-semibold text-sm">
-                                  {model.name}
-                                </span>
-                                <span className={`text-[10px] font-bold uppercase tracking-wider ${model.color}`}>
-                                  {model.tagline}
-                                </span>
-                              </div>
-                              <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-                                {model.description}
-                              </p>
-                            </div>
-                            {isSelected && (
-                              <div className="w-2 h-2 rounded-full bg-foreground mt-2 flex-shrink-0" />
-                            )}
+                              <Check className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={() => setDeleteConfirmId(null)}
+                              className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setDeleteConfirmId(chat.id)}
+                            className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            <Trash2 className="w-3 h-3" />
                           </button>
-                        );
-                      })}
+                        )}
+                      </div>
                     </div>
-                  </motion.div>
+                  ))}
+                </div>
+              ))}
+              {chats.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-8 text-muted-foreground/40">
+                  <MessageSquare className="w-8 h-8 mb-2" />
+                  <p className="text-xs">Sin conversaciones</p>
+                </div>
+              )}
+            </div>
+
+            {/* Sidebar Footer */}
+            <div className="px-3 py-2 border-t border-border/30 flex-shrink-0">
+              <div className="flex items-center gap-2 px-2 py-1.5">
+                <div className="w-5 h-5 rounded-full bg-gradient-to-br from-emerald-500 to-cyan-500 flex items-center justify-center">
+                  <span className="text-[8px] font-bold text-white">H</span>
+                </div>
+                <span className="text-[11px] text-muted-foreground">Hache IA v1.0</span>
+              </div>
+            </div>
+          </motion.aside>
+        )}
+      </AnimatePresence>
+
+      {/* ─── Main Area ─── */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* ─── Top Bar ─── */}
+        <header className="flex-shrink-0 border-b border-border/30 bg-background/90 backdrop-blur-xl">
+          <div className="max-w-3xl mx-auto px-4 h-12 flex items-center justify-between">
+            {/* Left: Sidebar toggle + Logo (when sidebar hidden) */}
+            <div className="flex items-center gap-2.5">
+              {!sidebarOpen && (
+                <>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground"
+                          onClick={() => setSidebarOpen(true)}
+                        >
+                          <PanelLeft className="w-4 h-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Abrir sidebar</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                  <div className="w-7 h-7 rounded-lg overflow-hidden ring-1 ring-white/10">
+                    <Image
+                      src="/hache-ia-logo.png"
+                      alt="Hache"
+                      width={28}
+                      height={28}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <span className="font-bold text-sm tracking-tight bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
+                    Hache IA
+                  </span>
                 </>
               )}
-            </AnimatePresence>
-          </div>
-
-          {/* Right: Actions */}
-          <div className="flex items-center gap-1">
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 rounded-lg"
-                    onClick={() =>
-                      setTheme(theme === "dark" ? "light" : "dark")
-                    }
-                  >
-                    {theme === "dark" ? (
-                      <Sun className="w-4 h-4" />
-                    ) : (
-                      <Moon className="w-4 h-4" />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Tema</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground"
-                    onClick={clearChat}
-                    disabled={!hasMessages}
-                  >
-                    <Plus className="w-4 h-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Nuevo chat</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-        </div>
-      </header>
-
-      {/* ─── Chat Area ─── */}
-      <main
-        ref={chatContainerRef}
-        className="flex-1 overflow-y-auto"
-      >
-        <div className="max-w-3xl mx-auto px-4">
-          {!hasMessages ? (
-            <WelcomeScreen
-              selectedModel={selectedModel}
-              onSuggestionClick={setInput}
-            />
-          ) : (
-            <div className="py-6 space-y-6">
-              {messages.map((message) => (
-                <MessageBubble
-                  key={message.id}
-                  message={message}
-                  copiedId={copiedId}
-                  onCopy={copyToClipboard}
-                />
-              ))}
-
-              {isLoading &&
-                messages[messages.length - 1]?.role === "user" && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="flex items-center gap-3"
-                  >
-                    <div className="w-7 h-7 rounded-lg overflow-hidden ring-1 ring-white/10 flex-shrink-0">
-                      <Image
-                        src="/ochi-ia-logo.png"
-                        alt="Ochi"
-                        width={28}
-                        height={28}
-                        className="w-full h-full object-cover"
-                      />
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <motion.div
-                        animate={{ opacity: [0.2, 1, 0.2] }}
-                        transition={{ duration: 1, repeat: Infinity, delay: 0 }}
-                        className="w-1 h-1 rounded-full bg-foreground"
-                      />
-                      <motion.div
-                        animate={{ opacity: [0.2, 1, 0.2] }}
-                        transition={{ duration: 1, repeat: Infinity, delay: 0.15 }}
-                        className="w-1 h-1 rounded-full bg-foreground"
-                      />
-                      <motion.div
-                        animate={{ opacity: [0.2, 1, 0.2] }}
-                        transition={{ duration: 1, repeat: Infinity, delay: 0.3 }}
-                        className="w-1 h-1 rounded-full bg-foreground"
-                      />
-                    </div>
-                  </motion.div>
-                )}
-              <div ref={messagesEndRef} />
-            </div>
-          )}
-        </div>
-      </main>
-
-      {/* ─── Input Area ─── */}
-      <footer className="flex-shrink-0 bg-background">
-        <div className="max-w-3xl mx-auto px-4 pb-4 pt-2">
-          <div className="relative flex items-end bg-muted/40 rounded-2xl border border-border/30 focus-within:border-border/60 transition-colors">
-            <Textarea
-              ref={textareaRef}
-              value={input}
-              onChange={handleTextareaChange}
-              onKeyDown={handleKeyDown}
-              placeholder="Envía un mensaje a Ochi..."
-              className="flex-1 min-h-[48px] max-h-[200px] resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-sm py-3.5 px-4 placeholder:text-muted-foreground/40"
-              rows={1}
-              disabled={isLoading}
-            />
-            <Button
-              onClick={handleSend}
-              disabled={!input.trim() || isLoading}
-              size="icon"
-              className="h-8 w-8 rounded-lg mr-2 mb-2.5 bg-foreground text-background hover:bg-foreground/80 disabled:opacity-20 transition-all"
-            >
-              {isLoading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
+              {sidebarOpen && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground -ml-1"
+                        onClick={() => setSidebarOpen(true)}
+                      >
+                        <PanelLeft className="w-4 h-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Abrir sidebar</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
               )}
-            </Button>
+            </div>
+
+            {/* Center: Model Picker */}
+            <div className="relative">
+              <button
+                onClick={() => setShowModelPicker(!showModelPicker)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-muted/60 transition-colors"
+              >
+                <selectedModel.icon className={`w-3.5 h-3.5 ${selectedModel.color}`} />
+                <span className="text-sm font-semibold">{selectedModel.name}</span>
+                <ChevronDown className="w-3 h-3 text-muted-foreground" />
+              </button>
+
+              <AnimatePresence>
+                {showModelPicker && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setShowModelPicker(false)}
+                    />
+                    <motion.div
+                      initial={{ opacity: 0, y: -4, scale: 0.97 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -4, scale: 0.97 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-80 bg-popover border border-border/50 rounded-xl shadow-2xl overflow-hidden z-50"
+                    >
+                      <div className="p-1.5">
+                        {HACHE_MODELS.map((model) => {
+                          const Icon = model.icon;
+                          const isSelected = selectedModelId === model.id;
+                          return (
+                            <button
+                              key={model.id}
+                              onClick={() => {
+                                setSelectedModelId(model.id);
+                                setShowModelPicker(false);
+                              }}
+                              className={`w-full flex items-start gap-3 p-3 rounded-lg transition-colors text-left ${
+                                isSelected
+                                  ? "bg-muted/80"
+                                  : "hover:bg-muted/40"
+                              }`}
+                            >
+                              <div
+                                className={`w-8 h-8 rounded-lg bg-gradient-to-br ${model.gradient} flex items-center justify-center flex-shrink-0 shadow-lg`}
+                              >
+                                <Icon className="w-4 h-4 text-white" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-semibold text-sm">
+                                    {model.name}
+                                  </span>
+                                  <span className={`text-[10px] font-bold uppercase tracking-wider ${model.color}`}>
+                                    {model.tagline}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                                  {model.description}
+                                </p>
+                              </div>
+                              {isSelected && (
+                                <div className="w-2 h-2 rounded-full bg-foreground mt-2 flex-shrink-0" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Right: Actions */}
+            <div className="flex items-center gap-1">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded-lg"
+                      onClick={() =>
+                        setTheme(theme === "dark" ? "light" : "dark")
+                      }
+                    >
+                      {theme === "dark" ? (
+                        <Sun className="w-4 h-4" />
+                      ) : (
+                        <Moon className="w-4 h-4" />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Tema</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground"
+                      onClick={handleNewChat}
+                    >
+                      <Plus className="w-4 h-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Nuevo chat</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
           </div>
-          <p className="text-[10px] text-center text-muted-foreground/30 mt-2">
-            Ochi IA puede cometer errores. Verifica la información importante.
-          </p>
-        </div>
-      </footer>
+        </header>
+
+        {/* ─── Chat Area ─── */}
+        <main
+          ref={chatContainerRef}
+          className="flex-1 overflow-y-auto"
+        >
+          <div className="max-w-3xl mx-auto px-4">
+            {!hasMessages ? (
+              <WelcomeScreen
+                selectedModel={selectedModel}
+                onSuggestionClick={setInput}
+              />
+            ) : (
+              <div className="py-6 space-y-6">
+                {messages.map((message) => (
+                  <MessageBubble
+                    key={message.id}
+                    message={message}
+                    copiedId={copiedId}
+                    onCopy={copyToClipboard}
+                  />
+                ))}
+
+                {isLoading &&
+                  messages[messages.length - 1]?.role === "user" && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="flex items-center gap-3"
+                    >
+                      <div className="w-7 h-7 rounded-lg overflow-hidden ring-1 ring-white/10 flex-shrink-0">
+                        <Image
+                          src="/hache-ia-logo.png"
+                          alt="Hache"
+                          width={28}
+                          height={28}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <motion.div
+                          animate={{ opacity: [0.2, 1, 0.2] }}
+                          transition={{ duration: 1, repeat: Infinity, delay: 0 }}
+                          className="w-1 h-1 rounded-full bg-foreground"
+                        />
+                        <motion.div
+                          animate={{ opacity: [0.2, 1, 0.2] }}
+                          transition={{ duration: 1, repeat: Infinity, delay: 0.15 }}
+                          className="w-1 h-1 rounded-full bg-foreground"
+                        />
+                        <motion.div
+                          animate={{ opacity: [0.2, 1, 0.2] }}
+                          transition={{ duration: 1, repeat: Infinity, delay: 0.3 }}
+                          className="w-1 h-1 rounded-full bg-foreground"
+                        />
+                      </div>
+                    </motion.div>
+                  )}
+                <div ref={messagesEndRef} />
+              </div>
+            )}
+          </div>
+        </main>
+
+        {/* ─── Input Area ─── */}
+        <footer className="flex-shrink-0 bg-background">
+          <div className="max-w-3xl mx-auto px-4 pb-4 pt-2">
+            <div className="relative flex items-end bg-muted/40 rounded-2xl border border-border/30 focus-within:border-border/60 transition-colors">
+              <Textarea
+                ref={textareaRef}
+                value={input}
+                onChange={handleTextareaChange}
+                onKeyDown={handleKeyDown}
+                placeholder="Envía un mensaje a Hache..."
+                className="flex-1 min-h-[48px] max-h-[200px] resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-sm py-3.5 px-4 placeholder:text-muted-foreground/40"
+                rows={1}
+                disabled={isLoading}
+              />
+              <Button
+                onClick={handleSend}
+                disabled={!input.trim() || isLoading}
+                size="icon"
+                className="h-8 w-8 rounded-lg mr-2 mb-2.5 bg-foreground text-background hover:bg-foreground/80 disabled:opacity-20 transition-all"
+              >
+                {isLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
+              </Button>
+            </div>
+            <p className="text-[10px] text-center text-muted-foreground/30 mt-2">
+              Hache IA puede cometer errores. Verifica la información importante.
+            </p>
+          </div>
+        </footer>
+      </div>
     </div>
   );
 }
@@ -495,7 +881,7 @@ function WelcomeScreen({
   selectedModel,
   onSuggestionClick,
 }: {
-  selectedModel: OchiModel;
+  selectedModel: HacheModel;
   onSuggestionClick: (text: string) => void;
 }) {
   const suggestions = [
@@ -513,10 +899,10 @@ function WelcomeScreen({
         transition={{ type: "spring", duration: 0.8, bounce: 0.3 }}
         className="mb-6"
       >
-        <div className="w-16 h-16 rounded-2xl overflow-hidden ring-1 ring-white/10 shadow-xl shadow-violet-500/10">
+        <div className="w-16 h-16 rounded-2xl overflow-hidden ring-1 ring-white/10 shadow-xl shadow-emerald-500/10">
           <Image
-            src="/ochi-ia-logo.png"
-            alt="Ochi IA"
+            src="/hache-ia-logo.png"
+            alt="Hache IA"
             width={64}
             height={64}
             className="w-full h-full object-cover"
@@ -590,8 +976,8 @@ function MessageBubble({
       {!isUser && (
         <div className="w-7 h-7 rounded-lg overflow-hidden ring-1 ring-white/10 flex-shrink-0 mt-0.5">
           <Image
-            src="/ochi-ia-logo.png"
-            alt="Ochi"
+            src="/hache-ia-logo.png"
+            alt="Hache"
             width={28}
             height={28}
             className="w-full h-full object-cover"
@@ -720,7 +1106,7 @@ function MessageBubble({
                         href={href}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-violet-400 hover:text-violet-300 underline underline-offset-2"
+                        className="text-emerald-400 hover:text-emerald-300 underline underline-offset-2"
                       >
                         {children}
                       </a>

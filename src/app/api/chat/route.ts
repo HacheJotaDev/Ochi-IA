@@ -3,9 +3,9 @@ import { NextRequest } from "next/server";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-// Ochi model mapping: each Ochi model has a primary + fallback chain
-const OCHI_MODELS: Record<string, string[]> = {
-  "ochi-flash": [
+// Hache model mapping: each Hache model has a primary + fallback chain
+const HACHE_MODELS: Record<string, string[]> = {
+  "hache-flash": [
     "nvidia/nemotron-nano-9b-v2:free",
     "openai/gpt-oss-20b:free",
     "z-ai/glm-4.5-air:free",
@@ -13,7 +13,7 @@ const OCHI_MODELS: Record<string, string[]> = {
     "meta-llama/llama-3.2-3b-instruct:free",
     "liquid/lfm-2.5-1.2b-instruct:free",
   ],
-  "ochi-plus": [
+  "hache-plus": [
     "openai/gpt-oss-120b:free",
     "nousresearch/hermes-3-llama-3.1-405b:free",
     "meta-llama/llama-3.3-70b-instruct:free",
@@ -21,7 +21,7 @@ const OCHI_MODELS: Record<string, string[]> = {
     "qwen/qwen3-next-80b-a3b-instruct:free",
     "minimax/minimax-m2.5:free",
   ],
-  "ochi-thinking": [
+  "hache-thinking": [
     "nvidia/nemotron-3-super-120b-a12b:free",
     "arcee-ai/trinity-large-thinking:free",
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
@@ -31,13 +31,13 @@ const OCHI_MODELS: Record<string, string[]> = {
   ],
 };
 
-const OCHI_SYSTEM_PROMPTS: Record<string, string> = {
-  "ochi-flash":
-    "Eres Ochi Flash, un asistente de IA ultra rápido y eficiente. Respondes en el mismo idioma que el usuario. Eres directo, preciso y conciso. No uses palabras de más. Entregas la respuesta correcta de la forma más breve posible sin perder calidad. Cuando te pregunten quién eres, dices que eres Ochi Flash de Ochi IA.",
-  "ochi-plus":
-    "Eres Ochi Plus, un asistente de IA avanzado y versátil. Respondes en el mismo idioma que el usuario. Combinas velocidad con razonamiento profundo. Explicas de forma clara y completa, con ejemplos cuando es útil. Eres el modelo equilibrado perfecto para cualquier tarea. Cuando te pregunten quién eres, dices que eres Ochi Plus de Ochi IA.",
-  "ochi-thinking":
-    "Eres Ochi Thinking, un modelo de IA especializado en razonamiento profundo. Respondes en el mismo idioma que el usuario. Antes de responder, piensas paso a paso, analizas el problema desde múltiples ángulos y solo entonces construyes tu respuesta. Eres experto en matemáticas, lógica, programación compleja y problemas que requieren análisis cuidadoso. Muestra tu proceso de razonamiento cuando sea relevante. Cuando te pregunten quién eres, dices que eres Ochi Thinking de Ochi IA.",
+const HACHE_SYSTEM_PROMPTS: Record<string, string> = {
+  "hache-flash":
+    "Eres Hache Flash, un asistente de IA ultra rápido y eficiente. Respondes en el mismo idioma que el usuario. Eres directo, preciso y conciso. No uses palabras de más. Entregas la respuesta correcta de la forma más breve posible sin perder calidad. Cuando te pregunten quién eres, dices que eres Hache Flash de Hache IA.",
+  "hache-plus":
+    "Eres Hache Plus, un asistente de IA avanzado y versátil. Respondes en el mismo idioma que el usuario. Combinas velocidad con razonamiento profundo. Explicas de forma clara y completa, con ejemplos cuando es útil. Eres el modelo equilibrado perfecto para cualquier tarea. Cuando te pregunten quién eres, dices que eres Hache Plus de Hache IA.",
+  "hache-thinking":
+    "Eres Hache Thinking, un modelo de IA especializado en razonamiento profundo. Respondes en el mismo idioma que el usuario. Antes de responder, piensas paso a paso, analizas el problema desde múltiples ángulos y solo entonces construyes tu respuesta. Eres experto en matemáticas, lógica, programación compleja y problemas que requieren análisis cuidadoso. Muestra tu proceso de razonamiento cuando sea relevante. Cuando te pregunten quién eres, dices que eres Hache Thinking de Hache IA.",
 };
 
 async function tryModel(
@@ -50,8 +50,8 @@ async function tryModel(
     headers: {
       Authorization: `Bearer ${OPENROUTER_API_KEY}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": "https://ochi-ia.app",
-      "X-OpenRouter-Title": "Ochi IA",
+      "HTTP-Referer": "https://hache-ia.app",
+      "X-OpenRouter-Title": "Hache IA",
     },
     body: JSON.stringify({
       model,
@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { messages, model: ochiModel } = await req.json();
+    const { messages, model: hacheModel } = await req.json();
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return new Response(
@@ -82,10 +82,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const selectedOchiModel = ochiModel || "ochi-plus";
-    const modelChain = OCHI_MODELS[selectedOchiModel] || OCHI_MODELS["ochi-plus"];
+    const selectedHacheModel = hacheModel || "hache-plus";
+    const modelChain = HACHE_MODELS[selectedHacheModel] || HACHE_MODELS["hache-plus"];
     const systemPrompt =
-      OCHI_SYSTEM_PROMPTS[selectedOchiModel] || OCHI_SYSTEM_PROMPTS["ochi-plus"];
+      HACHE_SYSTEM_PROMPTS[selectedHacheModel] || HACHE_SYSTEM_PROMPTS["hache-plus"];
 
     let response: Response | null = null;
 
@@ -101,11 +101,11 @@ export async function POST(req: NextRequest) {
       const errorText = await res.text();
 
       if (res.status === 429 || res.status === 404) {
-        console.log(`[Ochi IA] ${modelId} unavailable, trying next...`);
+        console.log(`[Hache IA] ${modelId} unavailable, trying next...`);
         continue;
       }
 
-      console.error("[Ochi IA] API error:", res.status, errorText);
+      console.error("[Hache IA] API error:", res.status, errorText);
       return new Response(
         JSON.stringify({
           error: `Error de API: ${res.status}`,
@@ -176,7 +176,7 @@ export async function POST(req: NextRequest) {
             }
           }
         } catch (error) {
-          console.error("[Ochi IA] Stream error:", error);
+          console.error("[Hache IA] Stream error:", error);
         } finally {
           controller.close();
         }
@@ -191,7 +191,7 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (error) {
-    console.error("[Ochi IA] Chat error:", error);
+    console.error("[Hache IA] Chat error:", error);
     return new Response(
       JSON.stringify({ error: "Error interno del servidor" }),
       { status: 500, headers: { "Content-Type": "application/json" } }

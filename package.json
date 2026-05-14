@@ -1,8 +1,8 @@
 {
-  "name": "ochi-ia",
+  "name": "hache-ia",
   "version": "1.0.0",
   "private": true,
-  "description": "Ochi IA - Tu Inteligencia Artificial Personal",
+  "description": "Hache IA - Tu Inteligencia Artificial Personal",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
