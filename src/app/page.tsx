@@ -24,6 +24,8 @@ import {
   AlertCircle,
   ChevronUp,
   ImageIcon,
+  Bot,
+  Wrench,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -43,10 +45,22 @@ import Image from "next/image";
 
 interface Message {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "agent";
   content: string;
   timestamp: string;
   model?: string;
+  agentSteps?: AgentStepDisplay[];
+}
+
+interface AgentStepDisplay {
+  step: number;
+  type: string;
+  content: string;
+  toolName?: string;
+  toolParams?: Record<string, any>;
+  result?: string;
+  error?: string;
+  artifacts?: Array<{ type: string; png?: string; svg?: string; text?: string }>;
 }
 
 interface Chat {
@@ -196,6 +210,7 @@ export default function ChatPage() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [mode, setMode] = useState<"chat" | "agent">("chat");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -295,6 +310,12 @@ export default function ChatPage() {
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
+
+    // Route to agent or chat API
+    if (mode === "agent") {
+      await handleAgentSend();
+      return;
+    }
 
     let currentChatId = activeChatId;
 
@@ -446,6 +467,232 @@ export default function ChatPage() {
               ...c,
               messages: [...c.messages, errorMessage],
               updatedAt: new Date().toISOString(),
+            };
+          }
+          return c;
+        })
+      );
+    } finally {
+      setIsLoading(false);
+      textareaRef.current?.focus();
+    }
+  };
+
+  // ─── Agent Send Handler ─────────────────────────────────────────
+  const handleAgentSend = async () => {
+    let currentChatId = activeChatId;
+    if (!currentChatId) {
+      const newChat = createNewChat();
+      currentChatId = newChat.id;
+      setChats((prev) => [newChat, ...prev]);
+      setActiveChatId(newChat.id);
+    }
+
+    const userMessage: Message = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: input.trim(),
+      timestamp: new Date().toISOString(),
+    };
+
+    const finalChatId = currentChatId;
+    const agentMessageId = crypto.randomUUID();
+
+    setChats((prev) =>
+      prev.map((c) => {
+        if (c.id === finalChatId) {
+          const isFirstMessage = c.messages.length === 0;
+          return {
+            ...c,
+            messages: [...c.messages, userMessage, {
+              id: agentMessageId,
+              role: "agent" as const,
+              content: "",
+              timestamp: new Date().toISOString(),
+              model: "Hache Agent",
+              agentSteps: [],
+            }],
+            title: isFirstMessage ? generateTitle(userMessage.content) : c.title,
+            model: selectedModelId,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return c;
+      })
+    );
+
+    setInput("");
+    setIsLoading(true);
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+
+    try {
+      const currentChat = chats.find((c) => c.id === finalChatId);
+      const history = (currentChat?.messages || []).map((m) => ({ role: m.role === "agent" ? "assistant" : m.role, content: m.content }));
+
+      const response = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: userMessage.content,
+          model: selectedModelId,
+          history,
+        }),
+      });
+
+      if (!response.ok) throw new Error("Error del servidor");
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("No se pudo leer la respuesta");
+
+      const decoder = new TextDecoder();
+      let steps: AgentStepDisplay[] = [];
+      let currentStep = 0;
+      let thinkingText = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith("data: ")) continue;
+          const data = trimmed.slice(6);
+
+          try {
+            const event = JSON.parse(data);
+
+            if (event.type === "step_start") {
+              currentStep = event.step;
+              thinkingText = "";
+            } else if (event.type === "thinking") {
+              thinkingText += event.content;
+              const tt = thinkingText;
+              setChats((prev) =>
+                prev.map((c) => {
+                  if (c.id === finalChatId) {
+                    return {
+                      ...c,
+                      messages: c.messages.map((m) => {
+                        if (m.id === agentMessageId) {
+                          const existing = m.agentSteps || [];
+                          const lastStep = existing[existing.length - 1];
+                          const updatedSteps = lastStep && lastStep.type === "thinking" && lastStep.step === currentStep
+                            ? existing.slice(0, -1).concat([{ ...lastStep, content: tt }])
+                            : [...existing, { step: currentStep, type: "thinking", content: tt }];
+                          return { ...m, agentSteps: updatedSteps, content: tt };
+                        }
+                        return m;
+                      }),
+                    };
+                  }
+                  return c;
+                })
+              );
+            } else if (event.type === "tool_call") {
+              const toolCall = event.tool;
+              setChats((prev) =>
+                prev.map((c) => {
+                  if (c.id === finalChatId) {
+                    return {
+                      ...c,
+                      messages: c.messages.map((m) => {
+                        if (m.id === agentMessageId) {
+                          const steps = [...(m.agentSteps || []), {
+                            step: currentStep, type: "tool_call", content: `Usando ${toolCall.name}`,
+                            toolName: toolCall.name, toolParams: toolCall.params,
+                          }];
+                          return { ...m, agentSteps: steps };
+                        }
+                        return m;
+                      }),
+                    };
+                  }
+                  return c;
+                })
+              );
+            } else if (event.type === "tool_executing") {
+              // Show executing status
+            } else if (event.type === "tool_result") {
+              const result = event.result;
+              setChats((prev) =>
+                prev.map((c) => {
+                  if (c.id === finalChatId) {
+                    return {
+                      ...c,
+                      messages: c.messages.map((m) => {
+                        if (m.id === agentMessageId) {
+                          const steps = [...(m.agentSteps || []), {
+                            step: currentStep, type: "tool_result",
+                            content: result.output?.slice(0, 500) || "(no output)",
+                            result: result.output, error: result.error,
+                            artifacts: result.artifacts,
+                          }];
+                          return { ...m, agentSteps: steps };
+                        }
+                        return m;
+                      }),
+                    };
+                  }
+                  return c;
+                })
+              );
+            } else if (event.type === "complete") {
+              const finalContent = event.content;
+              setChats((prev) =>
+                prev.map((c) => {
+                  if (c.id === finalChatId) {
+                    return {
+                      ...c,
+                      messages: c.messages.map((m) => {
+                        if (m.id === agentMessageId) {
+                          const steps = [...(m.agentSteps || []), {
+                            step: currentStep, type: "complete", content: "Tarea completada",
+                          }];
+                          return { ...m, content: finalContent, agentSteps: steps };
+                        }
+                        return m;
+                      }),
+                    };
+                  }
+                  return c;
+                })
+              );
+            } else if (event.type === "error") {
+              setChats((prev) =>
+                prev.map((c) => {
+                  if (c.id === finalChatId) {
+                    return {
+                      ...c,
+                      messages: c.messages.map((m) => {
+                        if (m.id === agentMessageId) {
+                          return { ...m, content: `Error: ${event.content}` };
+                        }
+                        return m;
+                      }),
+                    };
+                  }
+                  return c;
+                })
+              );
+            }
+          } catch {
+            // Skip
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Agent error:", error);
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id === finalChatId) {
+            return {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === agentMessageId ? { ...m, content: "Error del agente. Intenta de nuevo." } : m
+              ),
             };
           }
           return c;
@@ -684,16 +931,44 @@ export default function ChatPage() {
               )}
             </div>
 
-            {/* Center: Model Picker */}
-            <div className="relative">
-              <button
-                onClick={() => setShowModelPicker(!showModelPicker)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-muted/60 transition-colors"
-              >
-                <selectedModel.icon className={`w-3.5 h-3.5 ${selectedModel.color}`} />
-                <span className="text-sm font-semibold">{selectedModel.name}</span>
-                <ChevronDown className="w-3 h-3 text-muted-foreground" />
-              </button>
+            {/* Center: Mode Toggle + Model Picker */}
+            <div className="flex items-center gap-2">
+              {/* Mode Toggle */}
+              <div className="flex items-center bg-muted/40 rounded-lg p-0.5 border border-border/20">
+                <button
+                  onClick={() => setMode("chat")}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                    mode === "chat"
+                      ? "bg-background shadow-sm text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <MessageSquare className="w-3 h-3" />
+                  Chat
+                </button>
+                <button
+                  onClick={() => setMode("agent")}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                    mode === "agent"
+                      ? "bg-emerald-500/10 shadow-sm text-emerald-400"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Bot className="w-3 h-3" />
+                  Agent
+                </button>
+              </div>
+
+              {/* Model Picker */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowModelPicker(!showModelPicker)}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-muted/60 transition-colors"
+                >
+                  <selectedModel.icon className={`w-3.5 h-3.5 ${selectedModel.color}`} />
+                  <span className="text-sm font-semibold">{selectedModel.name}</span>
+                  <ChevronDown className="w-3 h-3 text-muted-foreground" />
+                </button>
 
               <AnimatePresence>
                 {showModelPicker && (
@@ -755,6 +1030,7 @@ export default function ChatPage() {
                   </>
                 )}
               </AnimatePresence>
+              </div>
             </div>
 
             {/* Right: Actions */}
@@ -872,7 +1148,7 @@ export default function ChatPage() {
                 value={input}
                 onChange={handleTextareaChange}
                 onKeyDown={handleKeyDown}
-                placeholder="Envía un mensaje a Hache..."
+                placeholder={mode === "agent" ? "Describe una tarea para Hache Agent..." : "Envía un mensaje a Hache..."}
                 className="flex-1 min-h-[48px] max-h-[200px] resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-sm py-3.5 px-4 placeholder:text-muted-foreground/40"
                 rows={1}
                 disabled={isLoading}
@@ -891,7 +1167,7 @@ export default function ChatPage() {
               </Button>
             </div>
             <p className="text-[10px] text-center text-muted-foreground/30 mt-2">
-              Hache IA puede cometer errores. Verifica la información importante.
+              {mode === "agent" ? "Hache Agent ejecuta tareas de forma autónoma usando herramientas y sandbox." : "Hache IA puede cometer errores. Verifica la información importante."}
             </p>
           </div>
         </footer>
@@ -1208,6 +1484,131 @@ function CodeBlockWithSandbox({
   );
 }
 
+// ─── Agent Step Card ──────────────────────────────────────────────
+
+function AgentStepCard({ step }: { step: AgentStepDisplay }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (step.type === "thinking") {
+    return (
+      <motion.div
+        initial={{ opacity: 0, x: -8 }}
+        animate={{ opacity: 1, x: 0 }}
+        className="flex items-start gap-2 px-3 py-2 rounded-lg bg-muted/20 border border-border/10"
+      >
+        <Brain className="w-3.5 h-3.5 text-violet-400 mt-0.5 flex-shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-[10px] font-bold text-violet-400">PASO {step.step}</span>
+            <span className="text-[10px] text-muted-foreground">Pensando...</span>
+          </div>
+          <p className="text-xs text-muted-foreground whitespace-pre-wrap line-clamp-3">{step.content}</p>
+        </div>
+      </motion.div>
+    );
+  }
+
+  if (step.type === "tool_call") {
+    return (
+      <motion.div
+        initial={{ opacity: 0, x: -8 }}
+        animate={{ opacity: 1, x: 0 }}
+        className="flex items-start gap-2 px-3 py-2 rounded-lg bg-emerald-500/5 border border-emerald-500/10"
+      >
+        <Wrench className="w-3.5 h-3.5 text-emerald-400 mt-0.5 flex-shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-[10px] font-bold text-emerald-400">HERRAMIENTA</span>
+            <span className="text-[10px] font-mono text-emerald-300">{step.toolName}</span>
+          </div>
+          {step.toolParams && (
+            <details className="text-[10px] text-muted-foreground">
+              <summary className="cursor-pointer hover:text-foreground transition-colors">Ver parámetros</summary>
+              <pre className="mt-1 text-[9px] overflow-x-auto whitespace-pre-wrap bg-muted/30 rounded p-1.5">
+                {JSON.stringify(step.toolParams, null, 2).slice(0, 500)}
+              </pre>
+            </details>
+          )}
+        </div>
+      </motion.div>
+    );
+  }
+
+  if (step.type === "tool_result") {
+    const hasError = !!step.error;
+    const hasArtifacts = step.artifacts && step.artifacts.length > 0;
+    const resultPreview = step.result || step.content || "(no output)";
+    const showExpand = resultPreview.length > 200;
+
+    return (
+      <motion.div
+        initial={{ opacity: 0, x: -8 }}
+        animate={{ opacity: 1, x: 0 }}
+        className={`flex items-start gap-2 px-3 py-2 rounded-lg border ${
+          hasError
+            ? "bg-red-500/5 border-red-500/10"
+            : "bg-muted/10 border-border/10"
+        }`}
+      >
+        <Terminal className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${hasError ? "text-red-400" : "text-foreground/50"}`} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <span className={`text-[10px] font-bold ${hasError ? "text-red-400" : "text-foreground/50"}`}>RESULTADO</span>
+            {hasError && <AlertCircle className="w-3 h-3 text-red-400" />}
+          </div>
+          {hasError && (
+            <p className="text-[10px] text-red-400 mb-1 whitespace-pre-wrap">{step.error}</p>
+          )}
+          <pre className={`text-[10px] font-mono whitespace-pre-wrap text-muted-foreground ${!expanded && showExpand ? "line-clamp-4" : ""}`}>
+            {resultPreview}
+          </pre>
+          {showExpand && (
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="text-[9px] text-emerald-400 hover:text-emerald-300 mt-1"
+            >
+              {expanded ? "Mostrar menos" : "Mostrar más"}
+            </button>
+          )}
+          {hasArtifacts && step.artifacts!.map((art, i) => (
+            <div key={i} className="mt-2">
+              {art.png && (
+                <img
+                  src={`data:image/png;base64,${art.png}`}
+                  alt="Output"
+                  className="max-w-full rounded border border-border/20"
+                />
+              )}
+              {art.svg && (
+                <img
+                  src={`data:image/svg+xml;base64,${art.svg}`}
+                  alt="Output"
+                  className="max-w-full rounded border border-border/20"
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      </motion.div>
+    );
+  }
+
+  if (step.type === "complete") {
+    return (
+      <motion.div
+        initial={{ opacity: 0, x: -8 }}
+        animate={{ opacity: 1, x: 0 }}
+        className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/5 border border-emerald-500/10"
+      >
+        <Check className="w-3.5 h-3.5 text-emerald-400" />
+        <span className="text-[10px] font-bold text-emerald-400">TAREA COMPLETADA</span>
+      </motion.div>
+    );
+  }
+
+  return null;
+}
+
 // ─── Message Bubble ──────────────────────────────────────────────
 
 function MessageBubble({
@@ -1220,6 +1621,7 @@ function MessageBubble({
   onCopy: (text: string, id: string) => void;
 }) {
   const isUser = message.role === "user";
+  const isAgent = message.role === "agent";
 
   return (
     <motion.div
@@ -1230,18 +1632,33 @@ function MessageBubble({
     >
       {/* Avatar */}
       {!isUser && (
-        <div className="w-7 h-7 rounded-lg overflow-hidden ring-1 ring-white/10 flex-shrink-0 mt-0.5">
-          <Image
-            src="/hache-ia-logo.png"
-            alt="Hache"
-            width={28}
-            height={28}
-            className="w-full h-full object-cover"
-          />
+        <div className={`w-7 h-7 rounded-lg overflow-hidden ring-1 flex-shrink-0 mt-0.5 ${isAgent ? "ring-emerald-500/30" : "ring-white/10"}`}>
+          {isAgent ? (
+            <div className="w-full h-full bg-gradient-to-br from-emerald-500 to-cyan-500 flex items-center justify-center">
+              <Bot className="w-4 h-4 text-white" />
+            </div>
+          ) : (
+            <Image
+              src="/hache-ia-logo.png"
+              alt="Hache"
+              width={28}
+              height={28}
+              className="w-full h-full object-cover"
+            />
+          )}
         </div>
       )}
 
       <div className={`min-w-0 ${isUser ? "max-w-[75%]" : "max-w-[85%]"}`}>
+        {/* Agent Steps */}
+        {isAgent && message.agentSteps && message.agentSteps.length > 0 && (
+          <div className="mb-3 space-y-1.5">
+            {message.agentSteps.map((step, idx) => (
+              <AgentStepCard key={idx} step={step} />
+            ))}
+          </div>
+        )}
+
         {/* Content */}
         {isUser ? (
           <div className="bg-foreground text-background rounded-2xl rounded-tr-md px-4 py-2.5">
